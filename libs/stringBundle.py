@@ -76,3 +76,5 @@ class StringBundle:
                 self.id_to_message[key] = value
 
             f.close()
+        self.id_to_message["detectImg"] = "detect image"
+        self.id_to_message["detectImageWithYoloV5"] = "detect Image"

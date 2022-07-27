@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf8 -*-
 import codecs
+import json
 import os
 
 from libs.constants import DEFAULT_ENCODING
@@ -46,22 +47,26 @@ class YOLOWriter:
 
         return class_index, x_center, y_center, w, h
 
-    def save(self, class_list=[], target_file=None):
+    def save(self, class_list=[], target_file=None, default_prefdef_class_file=None):
 
         out_file = None  # Update yolo .txt
         out_class_file = None   # Update class list .txt
 
         if target_file is None:
-            out_file = open(
-            self.filename + TXT_EXT, 'w', encoding=ENCODE_METHOD)
-            classes_file = os.path.join(os.path.dirname(os.path.abspath(self.filename)), "classes.txt")
+            out_file = open(self.filename + TXT_EXT, 'w', encoding=ENCODE_METHOD)
+            if os.path.isfile(default_prefdef_class_file):
+                classes_file = default_prefdef_class_file
+            else:
+                classes_file = os.path.join(os.path.dirname(os.path.abspath(self.filename)), "classes.txt")
             out_class_file = open(classes_file, 'w')
 
         else:
             out_file = codecs.open(target_file, 'w', encoding=ENCODE_METHOD)
-            classes_file = os.path.join(os.path.dirname(os.path.abspath(target_file)), "classes.txt")
+            if os.path.isfile(default_prefdef_class_file):
+                classes_file = default_prefdef_class_file
+            else:
+                classes_file = os.path.join(os.path.dirname(os.path.abspath(target_file)), "classes.txt")
             out_class_file = open(classes_file, 'w')
-
 
         for box in self.box_list:
             class_index, x_center, y_center, w, h = self.bnd_box_to_yolo_line(box, class_list)
@@ -75,7 +80,20 @@ class YOLOWriter:
 
         out_class_file.close()
         out_file.close()
+        self.save_verified_status(target_file)
 
+    def save_verified_status(self, target_annotation_file_path):
+        dir_path = os.path.dirname(os.path.realpath(target_annotation_file_path))
+        file_name = os.path.split(target_annotation_file_path)[1]
+        verified_status_file = os.path.join(dir_path, "verified_status.json")
+        json_dict = {}
+        if os.path.isfile(verified_status_file):
+            with open(verified_status_file, 'r') as json_file:
+                json_dict = json.load(json_file)
+
+        json_dict[file_name] = self.verified
+        with open(verified_status_file, 'w+') as json_file:
+            json.dump(json_dict, json_file)
 
 
 class YoloReader:
@@ -104,11 +122,21 @@ class YoloReader:
 
         self.img_size = img_size
 
-        self.verified = False
+        self.verified = self.load_verified_status()
         # try:
         self.parse_yolo_format()
         # except:
         #     pass
+
+    def load_verified_status(self):
+        dir_path = os.path.dirname(os.path.realpath(self.file_path))
+        file_name = os.path.split(self.file_path)[1]
+        verified_status_file = os.path.join(dir_path, "verified_status.json")
+        try:
+            with open(verified_status_file, 'r') as json_file:
+                return json.load(json_file)[file_name]
+        except:
+            return False
 
     def get_shapes(self):
         return self.shapes
@@ -119,7 +147,7 @@ class YoloReader:
         self.shapes.append((label, points, None, None, difficult))
 
     def yolo_line_to_shape(self, class_index, x_center, y_center, w, h):
-        label = self.classes[int(class_index)]
+        label = self.classes[int(float(class_index))]
 
         x_min = max(float(x_center) - float(w) / 2, 0)
         x_max = min(float(x_center) + float(w) / 2, 1)
@@ -137,6 +165,30 @@ class YoloReader:
         bnd_box_file = open(self.file_path, 'r')
         for bndBox in bnd_box_file:
             class_index, x_center, y_center, w, h = bndBox.strip().split(' ')
+            label, x_min, y_min, x_max, y_max = self.yolo_line_to_shape(class_index, x_center, y_center, w, h)
+
+            # Caveat: difficult flag is discarded when saved as yolo format.
+            self.add_shape(label, x_min, y_min, x_max, y_max, False)
+
+
+class YoloReaderFromPred(YoloReader):
+    def __init__(self, pred, image, class_list_path):
+        self.img_size = [image.height(), image.width()]
+        self.shapes = []
+        self.class_list_path = class_list_path
+        classes_file = open(self.class_list_path, 'r')
+        self.classes = classes_file.read().strip('\n').split('\n')
+        self.parse_yolo_format(pred)
+        self.verified = False
+
+    def parse_yolo_format(self, pred):
+        for bndBox in pred:
+            x1, y1, x2, y2, _, class_index = bndBox
+            # class_index, x_center, y_center, w, h = bndBox.strip().split(' ')
+            x_center = (x1 + x2) / (2 * self.img_size[1])
+            y_center = (y1 + y2) / (2 * self.img_size[0])
+            w = (x2 - x1) / self.img_size[1]
+            h = (y2 - y1) / self.img_size[0]
             label, x_min, y_min, x_max, y_max = self.yolo_line_to_shape(class_index, x_center, y_center, w, h)
 
             # Caveat: difficult flag is discarded when saved as yolo format.

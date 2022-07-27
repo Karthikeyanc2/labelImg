@@ -746,3 +746,8 @@ class Canvas(QWidget):
 
     def set_drawing_shape_to_square(self, status):
         self.draw_square = status
+
+    def add_shapes(self, shapes):
+        self.shapes = list(set(self.shapes + list(shapes)))
+        self.current = None
+        self.repaint()

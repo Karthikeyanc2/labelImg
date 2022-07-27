@@ -1,2 +1,9 @@
 pyqt5==5.14.1
 lxml==4.9.1
+pandas
+tqdm
+seaborn
+Pillow>=7.1.2
+matplotlib>=3.2.2
+requests>=2.23.0
+ipython

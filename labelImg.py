@@ -9,6 +9,9 @@ import sys
 import webbrowser as wb
 from functools import partial
 
+import numpy as np
+from PIL import Image
+
 try:
     from PyQt5.QtGui import *
     from PyQt5.QtCore import *
@@ -41,7 +44,7 @@ from libs.labelFile import LabelFile, LabelFileError, LabelFileFormat
 from libs.toolBar import ToolBar
 from libs.pascal_voc_io import PascalVocReader
 from libs.pascal_voc_io import XML_EXT
-from libs.yolo_io import YoloReader
+from libs.yolo_io import YoloReader, YoloReaderFromPred
 from libs.yolo_io import TXT_EXT
 from libs.create_ml_io import CreateMLReader
 from libs.create_ml_io import JSON_EXT
@@ -75,6 +78,7 @@ class MainWindow(QMainWindow, WindowMixin):
 
     def __init__(self, default_filename=None, default_prefdef_class_file=None, default_save_dir=None):
         super(MainWindow, self).__init__()
+        self.default_prefdef_class_file = default_prefdef_class_file
         self.setWindowTitle(__appname__)
 
         # Load setting in the main thread
@@ -238,6 +242,8 @@ class MainWindow(QMainWindow, WindowMixin):
 
         verify = action(get_str('verifyImg'), self.verify_image,
                         'space', 'verify', get_str('verifyImgDetail'))
+        detect = action(get_str('detectImg'), self.detect_image,
+                        'q', tip=get_str('detectImageWithYoloV5'))
 
         save = action(get_str('save'), self.save_file,
                       'Ctrl+S', 'save', get_str('saveDetail'), enabled=False)
@@ -449,7 +455,7 @@ class MainWindow(QMainWindow, WindowMixin):
 
         self.tools = self.toolbar('Tools')
         self.actions.beginner = (
-            open, open_dir, change_save_dir, open_next_image, open_prev_image, verify, save, save_format, None, create, copy, delete, None,
+            open, open_dir, change_save_dir, open_next_image, open_prev_image, verify, save, save_format, detect, None, create, copy, delete, None,
             zoom_in, zoom, zoom_out, fit_window, fit_width, None,
             light_brighten, light, light_darken, light_org)
 
@@ -538,6 +544,71 @@ class MainWindow(QMainWindow, WindowMixin):
         # Open Dir if default file
         if self.file_path and os.path.isdir(self.file_path):
             self.open_dir_dialog(dir_path=self.file_path, silent=True)
+
+        # """
+        sys.path.append('/home/linux5/sai/yolov5')
+        import torch
+
+        weight = "/home/linux5/sai/yolo_weights/wt.pt"
+        self.device = torch.device('cpu')
+        self.model_torch_hub = torch.hub.load("ultralytics/yolov5", 'custom', path=weight, device=self.device)
+        # """
+
+    def detect_image(self, _value=False):
+        if self.file_path is None:
+            return
+
+        import torch
+        from utils.general import non_max_suppression
+
+        im = np.array(Image.open(self.file_path), dtype=np.uint8)
+        im = np.dstack([im[:, :, 2], im[:, :, 2], im[:, :, 2]])
+        im = torch.from_numpy(np.ascontiguousarray(im.transpose((2, 0, 1))))
+        im = im.to(self.device)
+        im = im.half()
+        im /= 255
+        if len(im.shape) == 3:
+            im = im[None]
+        pred = self.model_torch_hub(im, augment=False)
+        pred = non_max_suppression(pred, 0.05, 0.0000005, None, True, max_det=1000)
+
+        self.set_format(FORMAT_YOLO)
+        t_yolo_parse_reader = YoloReaderFromPred(pred[0].cpu().numpy(), self.image, self.default_prefdef_class_file)
+        shapes = t_yolo_parse_reader.get_shapes()
+        self.add_labels(shapes)
+        t_yolo_parse_reader.verified = self.canvas.verified
+        self.set_dirty()
+
+    def add_labels(self, shapes):
+        s = []
+        for label, points, line_color, fill_color, difficult in shapes:
+            shape = Shape(label=label)
+            for x, y in points:
+
+                # Ensure the labels are within the bounds of the image. If not, fix them.
+                x, y, snapped = self.canvas.snap_point_to_canvas(x, y)
+                if snapped:
+                    self.set_dirty()
+
+                shape.add_point(QPointF(x, y))
+            shape.difficult = difficult
+            shape.close()
+            s.append(shape)
+
+            if shape not in self.canvas.shapes:
+                if line_color:
+                    shape.line_color = QColor(*line_color)
+                else:
+                    shape.line_color = generate_color_by_text(label)
+
+                if fill_color:
+                    shape.fill_color = QColor(*fill_color)
+                else:
+                    shape.fill_color = generate_color_by_text(label)
+                self.add_label(shape)
+
+        self.update_combo_box()
+        self.canvas.add_shapes(s)
 
     def keyReleaseEvent(self, event):
         if event.key() == Qt.Key_Control:
@@ -901,7 +972,7 @@ class MainWindow(QMainWindow, WindowMixin):
             elif self.label_file_format == LabelFileFormat.YOLO:
                 if annotation_file_path[-4:].lower() != ".txt":
                     annotation_file_path += TXT_EXT
-                self.label_file.save_yolo_format(annotation_file_path, shapes, self.file_path, self.image_data, self.label_hist,
+                self.label_file.save_yolo_format(annotation_file_path, shapes, self.file_path, self.image_data, self.label_hist, self.default_prefdef_class_file,
                                                  self.line_color.getRgb(), self.fill_color.getRgb())
             elif self.label_file_format == LabelFileFormat.CREATE_ML:
                 if annotation_file_path[-5:].lower() != ".json":
@@ -1195,17 +1266,12 @@ class MainWindow(QMainWindow, WindowMixin):
                 self.load_create_ml_json_by_filename(json_path, file_path)
 
         else:
-            xml_path = os.path.splitext(file_path)[0] + XML_EXT
-            txt_path = os.path.splitext(file_path)[0] + TXT_EXT
-            json_path = os.path.splitext(file_path)[0] + JSON_EXT
-
-            if os.path.isfile(xml_path):
-                self.load_pascal_xml_by_filename(xml_path)
-            elif os.path.isfile(txt_path):
-                self.load_yolo_txt_by_filename(txt_path)
-            elif os.path.isfile(json_path):
-                self.load_create_ml_json_by_filename(json_path, file_path)
-            
+            annotation_file_name = self.get_label_file_name_from_image_file_name(file_path)
+            if os.path.isfile(annotation_file_name):
+                if annotation_file_name[-4:].lower() == ".xml":
+                    self.load_pascal_xml_by_filename(annotation_file_name)
+                elif annotation_file_name[-4:].lower() == ".txt":
+                    self.load_yolo_txt_by_filename(annotation_file_name)
 
     def resizeEvent(self, event):
         if self.canvas and not self.image.isNull()\
@@ -1357,7 +1423,9 @@ class MainWindow(QMainWindow, WindowMixin):
             target_dir_path = ustr(default_open_dir_path)
         self.last_open_dir = target_dir_path
         self.import_dir_images(target_dir_path)
-        self.default_save_dir = target_dir_path
+        self.default_save_dir = target_dir_path.replace("images", "labels")
+        if not os.path.isdir(self.default_save_dir):
+            os.mkdir(self.default_save_dir)
         if self.file_path:
             self.show_bounding_box_from_annotation_file(file_path=self.file_path)
 
@@ -1472,12 +1540,26 @@ class MainWindow(QMainWindow, WindowMixin):
                 saved_path = os.path.join(ustr(self.default_save_dir), saved_file_name)
                 self._save_file(saved_path)
         else:
-            image_file_dir = os.path.dirname(self.file_path)
-            image_file_name = os.path.basename(self.file_path)
-            saved_file_name = os.path.splitext(image_file_name)[0]
-            saved_path = os.path.join(image_file_dir, saved_file_name)
-            self._save_file(saved_path if self.label_file
+            saved_path = self.get_label_file_name_from_image_file_name(self.file_path)
+            self._save_file(saved_path if os.path.isfile(saved_path)
                             else self.save_file_dialog(remove_ext=False))
+
+    def get_label_file_name_from_image_file_name(self, image_file):
+        image_file_dir = os.path.dirname(self.file_path)
+        image_file_name = os.path.basename(self.file_path)
+        saved_file_name = os.path.splitext(image_file_name)[0]
+        annotation_file_path = os.path.join(image_file_dir, saved_file_name)
+        if self.label_file_format == LabelFileFormat.PASCAL_VOC:
+            if annotation_file_path[-4:].lower() != ".xml":
+                annotation_file_path += XML_EXT
+        elif self.label_file_format == LabelFileFormat.YOLO:
+            if annotation_file_path[-4:].lower() != ".txt":
+                annotation_file_path += TXT_EXT
+                annotation_file_path = annotation_file_path.replace("images", "labels")
+        elif self.label_file_format == LabelFileFormat.CREATE_ML:
+            if annotation_file_path[-4:].lower() != ".json":
+                annotation_file_path += TXT_EXT
+        return annotation_file_path
 
     def save_file_as(self, _value=False):
         assert not self.image.isNull(), "cannot save empty image"
@@ -1490,8 +1572,9 @@ class MainWindow(QMainWindow, WindowMixin):
         dlg = QFileDialog(self, caption, open_dialog_path, filters)
         dlg.setDefaultSuffix(LabelFile.suffix[1:])
         dlg.setAcceptMode(QFileDialog.AcceptSave)
-        filename_without_extension = os.path.splitext(self.file_path)[0]
-        dlg.selectFile(filename_without_extension)
+        # filename_without_extension = os.path.splitext(self.file_path)[0]
+        dlg.selectFile(self.get_label_file_name_from_image_file_name(self.file_path))
+        # dlg.selectFile(filename_without_extension)
         dlg.setOption(QFileDialog.DontUseNativeDialog, False)
         if dlg.exec_():
             full_file_path = ustr(dlg.selectedFiles()[0])
@@ -1607,6 +1690,7 @@ class MainWindow(QMainWindow, WindowMixin):
         self.set_dirty()
 
     def load_predefined_classes(self, predef_classes_file):
+        print(predef_classes_file)
         if os.path.exists(predef_classes_file) is True:
             with codecs.open(predef_classes_file, 'r', 'utf8') as f:
                 for line in f:
@@ -1636,7 +1720,7 @@ class MainWindow(QMainWindow, WindowMixin):
             return
 
         self.set_format(FORMAT_YOLO)
-        t_yolo_parse_reader = YoloReader(txt_path, self.image)
+        t_yolo_parse_reader = YoloReader(txt_path, self.image, self.default_prefdef_class_file)
         shapes = t_yolo_parse_reader.get_shapes()
         print(shapes)
         self.load_labels(shapes)
@@ -1675,9 +1759,11 @@ def inverted(color):
 
 def read(filename, default=None):
     try:
-        reader = QImageReader(filename)
-        reader.setAutoTransform(True)
-        return reader.read()
+        # reader = QImageReader(filename)
+        # reader.setAutoTransform(True)
+        # return reader.read()
+        im = np.array(Image.open(filename), dtype=np.uint8)
+        return QImage(im[:, :, 2].tobytes(), im.shape[1], im.shape[0], QImage.Format_Grayscale8)
     except:
         return default
 

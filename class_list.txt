@@ -1,0 +1,10 @@
+Car
+Truck
+Bus
+Trailer
+Pedestrian
+Cyclist
+Motorist
+C8
+C9
+C10

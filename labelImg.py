@@ -8,6 +8,7 @@ import shutil
 import sys
 import webbrowser as wb
 from functools import partial
+from pathlib import Path
 
 import numpy as np
 from PIL import Image
@@ -546,12 +547,14 @@ class MainWindow(QMainWindow, WindowMixin):
             self.open_dir_dialog(dir_path=self.file_path, silent=True)
 
         # """
-        sys.path.append('/home/linux5/sai/yolov5')
+        sys.path.append('/home/thinkstation/git_packages/yolov5')
         import torch
+        # from models.common import DetectMultiBackend
 
-        weight = "/home/linux5/sai/yolo_weights/wt.pt"
+        weight = "/home/thinkstation/git_packages/yolo_weights/wt.pt"
         self.device = torch.device('cpu')
         self.model_torch_hub = torch.hub.load("ultralytics/yolov5", 'custom', path=weight, device=self.device)
+        # self.model = DetectMultiBackend(self.weight, self.device)
         # """
 
     def detect_image(self, _value=False):
@@ -1228,6 +1231,11 @@ class MainWindow(QMainWindow, WindowMixin):
             self.paint_canvas()
             self.add_recent_file(self.file_path)
             self.toggle_actions(True)
+            self.default_save_dir = os.path.dirname(self.file_path)  # .replace('images', 'labels')
+            splits = self.default_save_dir.split('images')
+            self.default_save_dir = 'images'.join(splits[:-1]) + 'labels' + splits[-1]
+            if not os.path.exists(self.default_save_dir):
+                os.mkdir(self.default_save_dir)
             self.show_bounding_box_from_annotation_file(self.file_path)
 
             counter = self.counter_str()
@@ -1423,9 +1431,10 @@ class MainWindow(QMainWindow, WindowMixin):
             target_dir_path = ustr(default_open_dir_path)
         self.last_open_dir = target_dir_path
         self.import_dir_images(target_dir_path)
-        self.default_save_dir = target_dir_path.replace("images", "labels")
-        if not os.path.isdir(self.default_save_dir):
-            os.mkdir(self.default_save_dir)
+        if self.default_save_dir is None:
+            self.default_save_dir = target_dir_path
+            if not os.path.isdir(self.default_save_dir):
+                os.mkdir(self.default_save_dir)
         if self.file_path:
             self.show_bounding_box_from_annotation_file(file_path=self.file_path)
 
@@ -1555,7 +1564,9 @@ class MainWindow(QMainWindow, WindowMixin):
         elif self.label_file_format == LabelFileFormat.YOLO:
             if annotation_file_path[-4:].lower() != ".txt":
                 annotation_file_path += TXT_EXT
-                annotation_file_path = annotation_file_path.replace("images", "labels")
+                # annotation_file_path = annotation_file_path.replace("images", "labels")
+                splits = annotation_file_path.split('images')
+                annotation_file_path = 'images'.join(splits[:-1]) + 'labels' + splits[-1]
         elif self.label_file_format == LabelFileFormat.CREATE_ML:
             if annotation_file_path[-4:].lower() != ".json":
                 annotation_file_path += TXT_EXT
@@ -1806,3 +1817,4 @@ def main():
 
 if __name__ == '__main__':
     sys.exit(main())
+
